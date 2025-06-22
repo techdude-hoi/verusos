@@ -1,0 +1,76 @@
+#!/bin/bash
+
+# === Verus OS Bootstrap Installer for Arch Linux ===
+
+# Stop on error
+set -e
+
+echo "🔧 Verus OS: Starting installation..."
+
+# Confirm disks (Modify as needed)
+read -p "Enter the main OS drive (e.g., /dev/nvme0n1): " OS_DRIVE
+read -p "Enter the data drive (e.g., /dev/nvme1n1): " DATA_DRIVE
+
+echo "⚠️ WARNING: This will wipe $OS_DRIVE and $DATA_DRIVE"
+read -p "Proceed? (yes/no): " confirm
+if [[ $confirm != "yes" ]]; then
+    echo "Aborting."
+    exit 1
+fi
+
+# Partition OS Drive
+sgdisk -Z $OS_DRIVE
+sgdisk -n 1:0:+1G -t 1:ef00 -c 1:"EFI" $OS_DRIVE
+sgdisk -n 2:0:+32G -t 2:8200 -c 2:"SWAP" $OS_DRIVE
+sgdisk -n 3:0:0 -t 3:8300 -c 3:"ROOT" $OS_DRIVE
+
+# Partition Data Drive
+sgdisk -Z $DATA_DRIVE
+sgdisk -n 1:0:0 -t 1:8300 -c 1:"DATA" $DATA_DRIVE
+
+# Format partitions
+mkfs.vfat -F32 ${OS_DRIVE}p1
+mkswap ${OS_DRIVE}p2
+mkfs.ext4 ${OS_DRIVE}p3
+mkfs.ext4 ${DATA_DRIVE}p1
+
+# Mount partitions
+mount ${OS_DRIVE}p3 /mnt
+mkdir -p /mnt/boot/efi /mnt/opt/verus_data
+mount ${OS_DRIVE}p1 /mnt/boot/efi
+mount ${DATA_DRIVE}p1 /mnt/opt/verus_data
+swapon ${OS_DRIVE}p2
+
+# Install base system
+pacstrap /mnt base linux linux-firmware vim networkmanager openssh sudo
+
+# Generate fstab
+genfstab -U /mnt >> /mnt/etc/fstab
+
+# Chroot for config
+arch-chroot /mnt /bin/bash -c "
+ln -sf /usr/share/zoneinfo/America/Toronto /etc/localtime
+hwclock --systohc
+echo 'verus-core' > /etc/hostname
+echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen
+locale-gen
+echo 'LANG=en_US.UTF-8' > /etc/locale.conf
+echo 'KEYMAP=us' > /etc/vconsole.conf
+
+# Create verus user
+useradd -m -G wheel verus
+echo 'verus:verus' | chpasswd
+echo 'root:verus' | chpasswd
+echo '%wheel ALL=(ALL:ALL) ALL' >> /etc/sudoers
+
+# Bootloader
+pacman -S --noconfirm grub efibootmgr
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
+grub-mkconfig -o /boot/grub/grub.cfg
+
+# Enable services
+systemctl enable NetworkManager
+systemctl enable sshd
+"
+
+echo "✅ Verus OS base installation complete. Reboot when ready."
